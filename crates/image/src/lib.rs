@@ -211,10 +211,13 @@ impl Image {
         if w == self.w && h == self.h {
             return self.clone();
         }
-        if w <= self.w && h <= self.h && self.w.is_multiple_of(w) && self.h.is_multiple_of(h) {
-            if let Some(data) = reduce_box_f32(&self.data, [self.w as usize, self.h as usize], [w as usize, h as usize], self.channels()) {
-                return Image { w, h, kind: self.kind, data: Arc::new(data) };
-            }
+        if w <= self.w
+            && h <= self.h
+            && self.w.is_multiple_of(w)
+            && self.h.is_multiple_of(h)
+            && let Some(data) = reduce_box_f32(&self.data, [self.w as usize, self.h as usize], [w as usize, h as usize], self.channels())
+        {
+            return Image { w, h, kind: self.kind, data: Arc::new(data) };
         }
         Image::generate_uv(w, h, self.kind, |u, v| self.sample(u, v, tile))
     }
