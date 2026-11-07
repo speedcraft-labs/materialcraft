@@ -775,6 +775,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-resample"
+version = "0.1.0"
+source = "git+https://github.com/speedcraft-labs/craft-libs?rev=e6d994496a6d11cfb4b42a46847933f837c46afd#e6d994496a6d11cfb4b42a46847933f837c46afd"
+dependencies = [
+ "rayon",
+]
+
+[[package]]
 name = "craft-ui"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=f8f8829cc7be65d466d687dae381d1ca60e31242#f8f8829cc7be65d466d687dae381d1ca60e31242"
@@ -2419,6 +2427,7 @@ dependencies = [
 name = "materialcraft-image"
 version = "0.1.2"
 dependencies = [
+ "craft-resample",
  "rayon",
  "thiserror 2.0.21",
 ]

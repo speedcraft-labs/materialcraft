@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use craft_resample::reduce_box_f32;
 use rayon::prelude::*;
 
 /// Largest side an image may have (an allocation cap for hostile sizes).
@@ -211,20 +212,9 @@ impl Image {
             return self.clone();
         }
         if w <= self.w && h <= self.h && self.w.is_multiple_of(w) && self.h.is_multiple_of(h) {
-            let (fx, fy) = ((self.w / w) as i64, (self.h / h) as i64);
-            let inv = 1.0 / (fx * fy) as f32;
-            return Image::generate(w, h, self.kind, |x, y| {
-                let mut s = [0.0; 4];
-                for j in 0..fy {
-                    for i in 0..fx {
-                        let p = self.get(x as i64 * fx + i, y as i64 * fy + j, tile);
-                        for k in 0..4 {
-                            s[k] += p[k];
-                        }
-                    }
-                }
-                s.map(|v| v * inv)
-            });
+            if let Some(data) = reduce_box_f32(&self.data, [self.w as usize, self.h as usize], [w as usize, h as usize], self.channels()) {
+                return Image { w, h, kind: self.kind, data: Arc::new(data) };
+            }
         }
         Image::generate_uv(w, h, self.kind, |u, v| self.sample(u, v, tile))
     }
