@@ -73,29 +73,40 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+fn env_brdf(roughness: f32, ndv: f32) -> vec2<f32> {
+    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+    let r = roughness * c0 + c1;
+    let a004 = min(r.x * r.x, exp2(-9.28 * ndv)) * r.x + r.y;
+    return vec2<f32>(a004 * -1.04 + r.z, a004 * 1.04 + r.w);
+}
+
 @fragment
 fn fs_main(v: VertexOut) -> @location(0) vec4<f32> {
     let uv = v.uv;
     let base = textureSample(base_map, material_sampler, uv).rgb;
-    let rough = clamp(textureSample(rough_map, material_sampler, uv).r, 0.04, 1.0);
+    let rough = clamp(textureSample(rough_map, material_sampler, uv).r, 0.02, 1.0);
     let metal = clamp(textureSample(metal_map, material_sampler, uv).r, 0.0, 1.0);
     let ao = clamp(textureSample(ao_map, material_sampler, uv).r, 0.0, 1.0);
     let map_n = textureSample(normal_map, material_sampler, uv).xyz * 2.0 - 1.0;
     let n0 = normalize(v.normal);
     let t = normalize(v.tangent.xyz - n0 * dot(n0, v.tangent.xyz));
     let b = normalize(cross(n0, t)) * select(-1.0, 1.0, v.tangent.w >= 0.0);
-    let n = normalize(t * map_n.x + b * map_n.y + n0 * map_n.z);
+    var n = normalize(t * map_n.x - b * map_n.y + n0 * max(map_n.z, 0.05));
     let view = normalize(g.eye.xyz - v.world);
+    if dot(n, view) < 0.0 {
+        n = n0;
+    }
     let nov = max(dot(n, view), 0.001);
     let reflected = reflect(-view, n);
     let env_spec = textureSampleLevel(environment_map, material_sampler, env_uv(reflected), rough * 5.0).rgb;
     let f0 = mix(vec3<f32>(0.04), base, metal);
-    let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - nov, 5.0);
-    let diffuse = base * (1.0 - metal) * irradiance(n) / 3.14159265;
-    let specular = env_spec * fresnel * (1.0 - rough * 0.35);
+    let brdf = env_brdf(rough, nov);
+    let diffuse = base * (1.0 - metal) * irradiance(n);
+    let specular = env_spec * (f0 * brdf.x + vec3<f32>(brdf.y));
     let emissive = textureSample(emissive_map, material_sampler, uv).rgb;
     let opacity = textureSample(opacity_map, material_sampler, uv).r;
-    let linear = (diffuse * ao + specular + emissive) * exp2(g.config.y);
+    let linear = ((diffuse + specular) * ao + emissive) * exp2(g.config.y);
     let alpha = clamp(opacity, 0.0, 1.0);
     return vec4<f32>(aces(linear), alpha);
 }

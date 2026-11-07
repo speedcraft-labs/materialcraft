@@ -306,7 +306,7 @@ impl RasterResources {
         let map_id = map_ids(&call.maps);
         if map_id != self.map_id {
             self._maps = [
-                (&call.maps.base_color, [0.18, 0.18, 0.18, 1.0]),
+                (&call.maps.base_color, [0.5, 0.5, 0.5, 1.0]),
                 (&call.maps.roughness, [0.5, 0.5, 0.5, 1.0]),
                 (&call.maps.metallic, [0.0, 0.0, 0.0, 1.0]),
                 (&call.maps.ao, [1.0, 1.0, 1.0, 1.0]),
