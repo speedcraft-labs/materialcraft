@@ -134,6 +134,18 @@ impl Lighting {
         Lighting { name: id.into(), specular: ibl::prefilter(&env, 6), sh: ibl::sh9(&env) }
     }
 
+    /// Load an equirectangular HDRI for the view. The built-in CPU ray tracer and interactive
+    /// WGPU preview consume the same filtered environment and diffuse SH coefficients.
+    pub fn from_hdr_file(path: impl AsRef<std::path::Path>) -> Result<Lighting, String> {
+        let path = path.as_ref();
+        let image = image::ImageReader::open(path).map_err(|e| format!("{}: {e}", path.display()))?.decode().map_err(|e| format!("{}: {e}", path.display()))?;
+        let image = image.to_rgb32f();
+        let (width, height) = image.dimensions();
+        let data = image.pixels().map(|px| [px[0], px[1], px[2]]).collect();
+        let env = EnvImage { width, height, data };
+        Ok(Lighting { name: format!("hdri:{}", path.display()), specular: ibl::prefilter(&env, 6), sh: ibl::sh9(&env) })
+    }
+
     fn diffuse(&self, n: Vec3) -> Vec3 {
         let b = ibl::sh_basis(n);
         let mut c = Vec3::ZERO;

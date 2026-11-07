@@ -9,4 +9,4 @@
 pub mod ibl;
 pub mod preview;
 
-pub use preview::{Lighting, Maps, Scene, Settings, builtin_mesh, pan, render, render_cancellable};
+pub use preview::{Lighting, Maps, Scene, Settings, builtin_mesh, camera, pan, render, render_cancellable};

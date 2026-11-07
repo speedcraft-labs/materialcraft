@@ -19,6 +19,7 @@ pub mod levels_editor;
 pub mod library;
 pub mod menus;
 pub mod properties;
+pub mod raster_preview;
 pub mod state;
 pub mod theme;
 pub mod thumbs;
@@ -55,6 +56,9 @@ pub struct MaterialCraftApp {
     /// The graph editor's gesture state.
     pub graph: graph_view::GraphView,
     pub view3d: view3d::View3dState,
+    /// Selected native graphics adapter, recorded by journeys and diagnostics.
+    pub gpu_adapter: Option<String>,
+    pub gpu_render_state: Option<eframe::egui_wgpu::RenderState>,
     pub view2d: view2d::View2dState,
     /// The function graph editor window, when open.
     pub fn_editor: Option<function_editor::FnEditor>,
@@ -82,6 +86,11 @@ impl MaterialCraftApp {
         let ui = cc.storage.and_then(|s| eframe::get_value::<UiState>(s, "ui")).unwrap_or_default();
         theme::install(&cc.egui_ctx);
         let mut app = MaterialCraftApp::headless(session, ui);
+        app.gpu_adapter = cc.wgpu_render_state.as_ref().map(|rs| {
+            let info = rs.adapter.get_info();
+            format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type)
+        });
+        app.gpu_render_state = cc.wgpu_render_state.clone();
         i18n::set_language(&app.ui.prefs.language);
         app.fonts_ready = true;
         app.ui.windows.home = app.ui.prefs.show_home;
@@ -103,6 +112,8 @@ impl MaterialCraftApp {
             thumbs: thumbs::Thumbs::default(),
             graph: graph_view::GraphView::default(),
             view3d: view3d::View3dState::default(),
+            gpu_adapter: None,
+            gpu_render_state: None,
             view2d: view2d::View2dState::default(),
             fn_editor: None,
             input_queue: VecDeque::new(),

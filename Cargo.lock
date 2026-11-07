@@ -2436,6 +2436,7 @@ dependencies = [
 name = "materialcraft-render"
 version = "0.1.2"
 dependencies = [
+ "image",
  "materialcraft-geom",
  "materialcraft-image",
  "rayon",
@@ -2446,15 +2447,19 @@ name = "materialcraft-ui-egui"
 version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
+ "bytemuck",
  "craft-ui",
  "eframe",
  "egui",
  "egui-phosphor",
  "egui_kittest",
+ "half",
  "image",
  "js-sys",
  "log",
  "materialcraft-engine",
+ "materialcraft-geom",
+ "materialcraft-image",
  "materialcraft-render",
  "rfd",
  "serde",

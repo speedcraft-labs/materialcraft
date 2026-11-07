@@ -10,6 +10,8 @@ mod control_server;
 use materialcraft_engine::Session;
 use materialcraft_ui_egui::MaterialCraftApp;
 
+mod gpu;
+
 const ICON_PNG: &[u8] = include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.materialcraft.png");
 
 fn version() -> String {
@@ -94,7 +96,8 @@ fn main() {
     // the user's saved layout and settings: state goes to a throwaway file.
     let persistence_path =
         std::env::var_os("MATERIALCRAFT_NO_PREFS").map(|_| std::env::temp_dir().join(format!("materialcraft-noprefs-{}.ron", std::process::id())));
-    let options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, persistence_path, ..Default::default() };
+    let mut options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, persistence_path, ..Default::default() };
+    gpu::prefer_hardware_vulkan(&mut options);
     let control = args.control;
     let r = eframe::run_native(
         "MaterialCraft",

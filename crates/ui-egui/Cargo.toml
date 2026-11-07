@@ -10,7 +10,11 @@ workspace = true
 
 [dependencies]
 materialcraft-engine = { workspace = true }
+materialcraft-geom = { workspace = true }
+materialcraft-image = { workspace = true }
 materialcraft-render = { workspace = true }
+bytemuck = { workspace = true }
+half = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "persistence"] }
 egui = { workspace = true }
 craft-ui = { workspace = true }

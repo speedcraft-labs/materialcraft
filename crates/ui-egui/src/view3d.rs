@@ -42,11 +42,20 @@ pub struct View3dState {
     /// The full-quality frame rendering on a worker thread.
     job: Option<Job>,
     pub render_ms: f32,
+    /// Most recently read GPU render-pass duration (queried only by opted-in diagnostics).
+    pub gpu_frame_ms: Option<f32>,
+    /// Last opt-in GPU preview comparison against the settled ray-traced image.
+    pub gpu_diff_mae: Option<f32>,
+    pub gpu_diff_passed: Option<bool>,
+    /// View rectangle in logical points, for deterministic scripted orbit journeys.
+    pub view_rect: Option<[f32; 4]>,
     /// Frames rendered so far (previews and full quality).
     pub renders: u64,
     /// The last frame shown (RGBA8, for `view.screenshot`).
     pub shown: Option<(u32, u32, Vec<u8>)>,
     show_env: bool,
+    pub(crate) raster: Option<crate::raster_preview::RasterTarget>,
+    pub(crate) gpu_preview_active: bool,
 }
 
 impl View3dState {
@@ -171,6 +180,7 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
     menus(app, ui);
     let avail = ui.available_size();
     let (rect, resp) = ui.allocate_exact_size(vec2(avail.x, (avail.y - 22.0).max(40.0)), Sense::click_and_drag());
+    app.view3d.view_rect = Some([rect.min.x, rect.min.y, rect.width(), rect.height()]);
     crate::widgets::name(&resp, egui::Role::Image, "3D view");
     // Camera gestures.
     let mut moving = false;
@@ -204,10 +214,19 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
     if resp.double_clicked() {
         app.run("view.3d", json!({"yaw": 35.0, "pitch": 25.0, "distance": 3.2, "target": [0.0, 0.0, 0.0]}));
     }
-    render(app, ui.ctx(), rect, moving || resp.is_pointer_button_down_on());
+    render(app, ui, rect, moving || resp.is_pointer_button_down_on());
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 0.0, Color32::from_rgb(0x1b, 0x1c, 0x1e));
-    if let Some(t) = &app.view3d.tex {
+    if app.view3d.gpu_preview_active {
+        if let Some(target) = &app.view3d.raster {
+            p.image(
+                target.texture_id,
+                frame_rect(rect, Some((target.size[0], target.size[1]))),
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+    } else if let Some(t) = &app.view3d.tex {
         p.image(t.id(), frame_rect(rect, app.view3d.tex_size), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
     if app.session.view3d.alpha_view {
@@ -291,7 +310,8 @@ fn content_key(app: &MaterialCraftApp, w: u32, h: u32, show_env: bool) -> u64 {
 
 /// Keep the 3D view's texture up to date: a quick frame right away while the camera moves, the
 /// full-quality one once the view's size and the camera have rested for [`SETTLE`].
-fn render(app: &mut MaterialCraftApp, ctx: &egui::Context, rect: Rect, moving: bool) {
+fn render(app: &mut MaterialCraftApp, ui: &mut Ui, rect: Rect, moving: bool) {
+    let ctx = ui.ctx().clone();
     let now = ctx.input(|i| i.time);
     let size = view_size(rect);
     if moving || app.view3d.size.is_some_and(|s| s != size) {
@@ -299,19 +319,25 @@ fn render(app: &mut MaterialCraftApp, ctx: &egui::Context, rect: Rect, moving: b
     }
     app.view3d.size = Some(size);
     let key = content_key(app, size.0, size.1, app.view3d.show_env);
-    collect(app, ctx, key);
+    collect(app, &ctx, key);
     if app.view3d.key == Some((key, true)) || (moving && app.view3d.key == Some((key, false))) {
+        app.view3d.gpu_preview_active = app.view3d.key == Some((key, false)) && app.view3d.raster.is_some();
         return;
     }
     let ppp = ctx.pixels_per_point();
     if moving {
-        // One ray per pixel at half resolution, here: the camera follows the pointer.
+        if render_raster(app, ui, rect, key) {
+            ctx.request_repaint_after(Duration::from_secs_f64(SETTLE));
+            return;
+        }
+        // A software adapter or unavailable WGPU device keeps the portable CPU preview.
         if let Some(frame) = render_now(app, rect, ppp * 0.5, 1) {
-            show_frame(app, ctx, frame, key, false, size);
+            show_frame(app, &ctx, frame, key, false, size);
         }
         ctx.request_repaint_after(Duration::from_secs_f64(SETTLE));
         return;
     }
+    app.view3d.gpu_preview_active = app.view3d.raster.is_some() && app.view3d.key.is_some_and(|(_, full)| !full);
     let wait = app.view3d.changed_at.map_or(0.0, |t| SETTLE - (now - t));
     if wait > 0.0 {
         // Mid-resize or the camera just stopped: the last frame stays up (see `frame_rect`).
@@ -321,7 +347,48 @@ fn render(app: &mut MaterialCraftApp, ctx: &egui::Context, rect: Rect, moving: b
     if app.view3d.job.as_ref().is_some_and(|j| j.key == key) {
         return;
     }
-    start_full(app, ctx, rect, key, size);
+    start_full(app, &ctx, rect, key, size);
+}
+
+fn render_raster(app: &mut MaterialCraftApp, ui: &mut Ui, rect: Rect, key: u64) -> bool {
+    let Some(rs) = app.gpu_render_state.clone() else { return false };
+    let Some((scene, light, maps, settings)) = inputs(app, 1) else { return false };
+    let ppp = ui.ctx().pixels_per_point();
+    let size = [(rect.width() * ppp).round().clamp(16.0, 4096.0) as u32, (rect.height() * ppp).round().clamp(16.0, 4096.0) as u32];
+    if app.view3d.raster.as_ref().is_none_or(|target| target.size != size) {
+        if let Some(old) = app.view3d.raster.take() {
+            rs.renderer.write().free_texture(&old.texture_id);
+        }
+        app.view3d.raster = Some(crate::raster_preview::RasterTarget::new(&rs, size));
+    }
+    let Some(target) = app.view3d.raster.as_ref() else { return false };
+    let callback = crate::raster_preview::RasterCallback {
+        scene,
+        maps,
+        light,
+        settings,
+        size,
+        target: target.view.clone(),
+        depth: target.depth_view.clone(),
+        timestamp_query: target.timestamp_query.clone(),
+        timestamp_resolve: target.timestamp_resolve.clone(),
+        timestamp_readback: target.timestamp_readback.clone(),
+    };
+    ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, callback));
+    app.view3d.key = Some((key, false));
+    app.view3d.tex_size = Some((size[0], size[1]));
+    app.view3d.gpu_preview_active = true;
+    app.view3d.renders += 1;
+    true
+}
+
+/// Read back the last Vulkan render-pass timestamp when a diagnostic explicitly requests it.
+pub fn refresh_gpu_frame_time(app: &mut MaterialCraftApp) {
+    let measured =
+        app.gpu_render_state.as_ref().zip(app.view3d.raster.as_ref()).and_then(|(rs, target)| target.readback_gpu_frame_ms(&rs.device, &rs.queue).ok());
+    if let Some(ms) = measured {
+        app.view3d.gpu_frame_ms = Some(ms);
+    }
 }
 
 /// Show a finished full-quality frame if it is still the one wanted; drop (and so cancel) one
@@ -352,8 +419,16 @@ fn inputs(app: &mut MaterialCraftApp, supersample: u32) -> Option<(Arc<Scene>, A
         };
         app.view3d.scene = Some((scene_key, Arc::new(scene)));
     }
-    if app.view3d.light.as_ref().is_none_or(|l| l.name != v.environment) {
-        app.view3d.light = Some(Arc::new(Lighting::new(&v.environment)));
+    let hdri = std::env::var("MATERIALCRAFT_PREVIEW_HDRI").ok();
+    let light_key = hdri.as_ref().map_or_else(|| v.environment.clone(), |path| format!("hdri:{path}"));
+    if app.view3d.light.as_ref().is_none_or(|l| l.name != light_key) {
+        let light = hdri.as_ref().map_or_else(|| Ok(Lighting::new(&v.environment)), |path| Lighting::from_hdr_file(path));
+        app.view3d.light = Some(Arc::new(light.unwrap_or_else(|error| {
+            log::warn!("could not load MaterialCraft preview HDRI: {error}");
+            let mut fallback = Lighting::new(&v.environment);
+            fallback.name = light_key;
+            fallback
+        })));
     }
     let settings = Settings {
         yaw: v.yaw,
@@ -424,6 +499,39 @@ fn start_full(app: &mut MaterialCraftApp, ctx: &egui::Context, rect: Rect, key: 
 
 /// Upload a frame and remember what it shows.
 fn show_frame(app: &mut MaterialCraftApp, ctx: &egui::Context, frame: Frame, key: u64, full: bool, size: (u32, u32)) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if full && std::env::var_os("MATERIALCRAFT_GPU_DIFF_CHECK").is_some() {
+        if let (Some(rs), Some(target)) = (&app.gpu_render_state, &app.view3d.raster)
+            && target.size == [frame.w, frame.h]
+        {
+            match target
+                .readback_rgba(&rs.device, &rs.queue)
+                .and_then(|gpu| crate::raster_preview::map_average_pixel_error(&gpu, &frame.px).ok_or_else(|| "pixel buffers have different dimensions".into()))
+            {
+                Ok(error) if error <= crate::raster_preview::GPU_RAYTRACE_MAE_TOLERANCE => {
+                    app.view3d.gpu_diff_mae = Some(error);
+                    app.view3d.gpu_diff_passed = Some(true);
+                    log::info!(
+                        "GPU preview vs settled CPU ray tracer: mean absolute difference {error:.4} (limit {:.2}, pass)",
+                        crate::raster_preview::GPU_RAYTRACE_MAE_TOLERANCE
+                    );
+                }
+                Ok(error) => {
+                    app.view3d.gpu_diff_mae = Some(error);
+                    app.view3d.gpu_diff_passed = Some(false);
+                    log::warn!(
+                        "GPU preview vs settled CPU ray tracer: mean absolute difference {error:.4} exceeds limit {:.2}",
+                        crate::raster_preview::GPU_RAYTRACE_MAE_TOLERANCE
+                    );
+                }
+                Err(error) => {
+                    app.view3d.gpu_diff_mae = None;
+                    app.view3d.gpu_diff_passed = Some(false);
+                    log::warn!("could not compare GPU preview with CPU ray tracer: {error}");
+                }
+            }
+        }
+    }
     let st = &mut app.view3d;
     let img = ColorImage::from_rgba_unmultiplied([frame.w as usize, frame.h as usize], &frame.px);
     match &mut st.tex {
@@ -435,6 +543,7 @@ fn show_frame(app: &mut MaterialCraftApp, ctx: &egui::Context, frame: Frame, key
     st.shown = Some((frame.w, frame.h, frame.px));
     st.key = Some((key, full));
     st.tex_size = Some(size);
+    st.gpu_preview_active = false;
 }
 
 #[cfg(test)]

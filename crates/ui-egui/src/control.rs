@@ -236,16 +236,26 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
             ok(materialcraft_engine::inspect::session(&app.session, None))
         }
         "ui.inspect" => {
+            if std::env::var("MATERIALCRAFT_RECORD_GPU_TIMING").as_deref() == Ok("1") {
+                crate::view3d::refresh_gpu_frame_time(app);
+            }
             let rect = |r: egui::Rect| json!([r.min.x, r.min.y, r.width(), r.height()]);
             ok(json!({
                 "state": app.ui,
                 "graphView": rect(app.graph.view),
+                "view3dRect": app.view3d.view_rect,
                 "nodes": app.graph.rects.iter().map(|(id, r)| json!({"id": id.0, "rect": rect(*r)})).collect::<Vec<_>>(),
                 "ports": app.graph.ports.iter().map(|h| json!({"node": h.node.0, "port": h.port, "output": h.output, "pos": [h.pos.x, h.pos.y]})).collect::<Vec<_>>(),
                 "fps": app.fps,
                 "uiMs": app.ui_ms,
                 "cooking": app.cooker.busy(),
                 "render3dMs": app.view3d.render_ms,
+                "gpuAdapter": app.gpu_adapter,
+                "gpuFrameMs": app.view3d.gpu_frame_ms,
+                "gpuFrameTiming": app.view3d.raster.as_ref().map_or("unavailable", |target| if target.gpu_timing_supported { "Vulkan timestamp query" } else { "unsupported" }),
+                "gpuPreviewActive": app.view3d.gpu_preview_active,
+                "gpuReferenceMae": app.view3d.gpu_diff_mae,
+                "gpuReferencePass": app.view3d.gpu_diff_passed,
                 "toasts": app.toasts.iter().map(|t| json!({"text": t.text, "error": t.error})).collect::<Vec<_>>(),
             }))
         }
