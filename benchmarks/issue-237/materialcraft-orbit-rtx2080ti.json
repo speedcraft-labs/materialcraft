@@ -1,0 +1,256 @@
+{
+  "schema_version": 2,
+  "name": "materialcraft / materialcraft.orbit-material-preview",
+  "revs": {
+    "old": "app:dc7d5a494e9ee392ee36264651690a9c0602463f;craft-libs:0dc5dc34ea223b43ffdaedd898faca7effe4a734",
+    "new": "app:54be555b10d33431b20a8375d8924481349ba104;craft-libs:0dc5dc34ea223b43ffdaedd898faca7effe4a734"
+  },
+  "fingerprint": {
+    "os": "linux",
+    "arch": "x86_64",
+    "kernel": "Linux 6.12.115+deb13.1-cloud-amd64",
+    "cpu_model": "AMD Ryzen 9 5900XT 16-Core Processor",
+    "logical_cores": 6,
+    "isolation_mode": true,
+    "allowed_cpu_list": "22-27",
+    "physical_cores": 28,
+    "ram_bytes": 92724637696,
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "profile": "release",
+    "opt_level": "3",
+    "debug_assertions": false,
+    "date": "2026-11-08T10:37:49+00:00"
+  },
+  "gpu_adapters": [],
+  "prefix_cache": null,
+  "config": {
+    "requested_repetitions": 10,
+    "runs_per_side": 10,
+    "warmup_runs": 2,
+    "resamples": 2000,
+    "seed": 12648430,
+    "output_checked": true,
+    "cpu_time": "process"
+  },
+  "guard": {
+    "contended": false,
+    "reasons": [],
+    "load_before": 0.020202020202020204,
+    "load_after": 0.020002000200020003,
+    "logical_cores": 6,
+    "max_load_per_core": 0.5,
+    "load_threshold": 3.0,
+    "throttle_before": {
+      "speed_limit_pct": null,
+      "throttle_count": null
+    },
+    "throttle_after": {
+      "speed_limit_pct": null,
+      "throttle_count": null
+    }
+  },
+  "contended": false,
+  "publishable": true,
+  "inputs": [
+    {
+      "name": "Camera_01_CC0",
+      "wall": {
+        "old": {
+          "n": 10,
+          "median_ns": 5139081.0,
+          "mad_ns": 198886.5,
+          "min_ns": 4015477.0,
+          "max_ns": 6058677.0
+        },
+        "new": {
+          "n": 10,
+          "median_ns": 24495.5,
+          "mad_ns": 544.0,
+          "min_ns": 23776.0,
+          "max_ns": 462848.0
+        },
+        "ratio": {
+          "point": 0.00476651370157427,
+          "ci_lo": 0.004560980017776419,
+          "ci_hi": 0.0051966867051652784
+        }
+      },
+      "cpu": {
+        "old": {
+          "n": 10,
+          "median_ns": 382101.0,
+          "mad_ns": 64170.5,
+          "min_ns": 298031.0,
+          "max_ns": 1029100.0
+        },
+        "new": {
+          "n": 10,
+          "median_ns": 374121.5,
+          "mad_ns": 37976.0,
+          "min_ns": 312475.0,
+          "max_ns": 592060.0
+        },
+        "ratio": {
+          "point": 0.9791167780246584,
+          "ci_lo": 0.8088851667934454,
+          "ci_hi": 1.219892595803805
+        }
+      }
+    }
+  ],
+  "aggregate": {
+    "inputs": 1,
+    "wall": {
+      "point": 0.004766513701574268,
+      "ci_lo": 0.004560980017776419,
+      "ci_hi": 0.0051966867051652784
+    },
+    "cpu": {
+      "point": 0.9791167780246584,
+      "ci_lo": 0.8088851667934454,
+      "ci_hi": 1.219892595803805
+    }
+  },
+  "runs": [
+    {
+      "order": 0,
+      "input": "Camera_01_CC0",
+      "side": "new",
+      "wall_ns": 23776,
+      "cpu_ns": 363633
+    },
+    {
+      "order": 1,
+      "input": "Camera_01_CC0",
+      "side": "old",
+      "wall_ns": 5262027,
+      "cpu_ns": 481714
+    },
+    {
+      "order": 2,
+      "input": "Camera_01_CC0",
+      "side": "old",
+      "wall_ns": 6058677,
+      "cpu_ns": 414007
+    },
+    {
+      "order": 3,
+      "input": "Camera_01_CC0",
+      "side": "new",
+      "wall_ns": 462848,
+      "cpu_ns": 592060
+    },
+    {
+      "order": 4,
+      "input": "Camera_01_CC0",
+      "side": "old",
+      "wall_ns": 5188287,
+      "cpu_ns": 1029100
+    },
+    {
+      "order": 5,
+      "input": "Camera_01_CC0",
+      "side": "new",
+      "wall_ns": 25792,
+      "cpu_ns": 409869
+    },
+    {
+      "order": 6,
+      "input": "Camera_01_CC0",
+      "side": "new",
+      "wall_ns": 23840,
+      "cpu_ns": 487765
+    },
+    {
+      "order": 7,
+      "input": "Camera_01_CC0",
+      "side": "old",
+      "wall_ns": 4785996,
+      "cpu_ns": 383007
+    },
+    {
+      "order": 8,
+      "input": "Camera_01_CC0",
+      "side": "new",
+      "wall_ns": 24576,
+      "cpu_ns": 312475
+    },
+    {
+      "order": 9,
+      "input": "Camera_01_CC0",
+      "side": "old",
+      "wall_ns": 5001139,
+      "cpu_ns": 367088
+    },
+    {
+      "order": 10,
+      "input": "Camera_01_CC0",
+      "side": "old",
+      "wall_ns": 5398912,
+      "cpu_ns": 449503
+    },
+    {
+      "order": 11,
+      "input": "Camera_01_CC0",
+      "side": "new",
+      "wall_ns": 24000,
+      "cpu_ns": 419927
+    },
+    {
+      "order": 12,
+      "input": "Camera_01_CC0",
+      "side": "old",
+      "wall_ns": 4426214,
+      "cpu_ns": 381195
+    },
+    {
+      "order": 13,
+      "input": "Camera_01_CC0",
+      "side": "new",
+      "wall_ns": 24576,
+      "cpu_ns": 384610
+    },
+    {
+      "order": 14,
+      "input": "Camera_01_CC0",
+      "side": "new",
+      "wall_ns": 23903,
+      "cpu_ns": 358051
+    },
+    {
+      "order": 15,
+      "input": "Camera_01_CC0",
+      "side": "old",
+      "wall_ns": 5253143,
+      "cpu_ns": 298031
+    },
+    {
+      "order": 16,
+      "input": "Camera_01_CC0",
+      "side": "old",
+      "wall_ns": 4015477,
+      "cpu_ns": 312616
+    },
+    {
+      "order": 17,
+      "input": "Camera_01_CC0",
+      "side": "new",
+      "wall_ns": 24576,
+      "cpu_ns": 333917
+    },
+    {
+      "order": 18,
+      "input": "Camera_01_CC0",
+      "side": "new",
+      "wall_ns": 24415,
+      "cpu_ns": 351500
+    },
+    {
+      "order": 19,
+      "input": "Camera_01_CC0",
+      "side": "old",
+      "wall_ns": 5089875,
+      "cpu_ns": 321162
+    }
+  ]
+}
