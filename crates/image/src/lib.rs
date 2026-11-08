@@ -14,6 +14,7 @@ use rayon::prelude::*;
 
 /// Largest side an image may have (an allocation cap for hostile sizes).
 pub const MAX_SIDE: u32 = 8192;
+const MIN_SHARED_BOX_PIXELS: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -211,13 +212,29 @@ impl Image {
         if w == self.w && h == self.h {
             return self.clone();
         }
-        if w <= self.w
-            && h <= self.h
-            && self.w.is_multiple_of(w)
-            && self.h.is_multiple_of(h)
-            && let Some(data) = reduce_box_f32(&self.data, [self.w as usize, self.h as usize], [w as usize, h as usize], self.channels())
-        {
-            return Image { w, h, kind: self.kind, data: Arc::new(data) };
+        if w <= self.w && h <= self.h && self.w.is_multiple_of(w) && self.h.is_multiple_of(h) {
+            let (fx, fy) = ((self.w / w) as i64, (self.h / h) as i64);
+            let pixels = self.w as usize * self.h as usize;
+            // For tiny images, the generic helper's checks and allocation erase its kernel savings.
+            // Keep the original loop there; use the shared reducer for larger images.
+            if pixels < MIN_SHARED_BOX_PIXELS {
+                let inv = 1.0 / (fx * fy) as f32;
+                return Image::generate(w, h, self.kind, |x, y| {
+                    let mut sum = [0.0; 4];
+                    for j in 0..fy {
+                        for i in 0..fx {
+                            let pixel = self.get(x as i64 * fx + i, y as i64 * fy + j, tile);
+                            for c in 0..4 {
+                                sum[c] += pixel[c];
+                            }
+                        }
+                    }
+                    sum.map(|value| value * inv)
+                });
+            }
+            if let Some(data) = reduce_box_f32(&self.data, [self.w as usize, self.h as usize], [w as usize, h as usize], self.channels()) {
+                return Image { w, h, kind: self.kind, data: Arc::new(data) };
+            }
         }
         Image::generate_uv(w, h, self.kind, |u, v| self.sample(u, v, tile))
     }
