@@ -53,7 +53,7 @@ materialcraft-engine = { path = "crates/engine" }
 materialcraft-render = { path = "crates/render" }
 materialcraft-automation = { path = "crates/automation" }
 materialcraft-ui-egui = { path = "crates/ui-egui" }
-craft-resample = { git = "https://github.com/speedcraft-labs/craft-libs", branch = "algo/161-image-resample", features = ["rayon"] }
+craft-resample = { git = "https://github.com/storytold/craft-libs", rev = "fd21a0a80a8e4f4c183a8e0da0953e1b033b817d", features = ["rayon"] }
 
 # external
 thiserror = "2"
