@@ -9,10 +9,12 @@
 
 use std::sync::Arc;
 
+use craft_resample::reduce_box_f32;
 use rayon::prelude::*;
 
 /// Largest side an image may have (an allocation cap for hostile sizes).
 pub const MAX_SIDE: u32 = 8192;
+const MIN_SHARED_BOX_PIXELS: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -212,19 +214,27 @@ impl Image {
         }
         if w <= self.w && h <= self.h && self.w.is_multiple_of(w) && self.h.is_multiple_of(h) {
             let (fx, fy) = ((self.w / w) as i64, (self.h / h) as i64);
-            let inv = 1.0 / (fx * fy) as f32;
-            return Image::generate(w, h, self.kind, |x, y| {
-                let mut s = [0.0; 4];
-                for j in 0..fy {
-                    for i in 0..fx {
-                        let p = self.get(x as i64 * fx + i, y as i64 * fy + j, tile);
-                        for k in 0..4 {
-                            s[k] += p[k];
+            let pixels = self.w as usize * self.h as usize;
+            // For tiny images, the generic helper's checks and allocation erase its kernel savings.
+            // Keep the original loop there; use the shared reducer for larger images.
+            if pixels < MIN_SHARED_BOX_PIXELS {
+                let inv = 1.0 / (fx * fy) as f32;
+                return Image::generate(w, h, self.kind, |x, y| {
+                    let mut sum = [0.0; 4];
+                    for j in 0..fy {
+                        for i in 0..fx {
+                            let pixel = self.get(x as i64 * fx + i, y as i64 * fy + j, tile);
+                            for c in 0..4 {
+                                sum[c] += pixel[c];
+                            }
                         }
                     }
-                }
-                s.map(|v| v * inv)
-            });
+                    sum.map(|value| value * inv)
+                });
+            }
+            if let Some(data) = reduce_box_f32(&self.data, [self.w as usize, self.h as usize], [w as usize, h as usize], self.channels()) {
+                return Image { w, h, kind: self.kind, data: Arc::new(data) };
+            }
         }
         Image::generate_uv(w, h, self.kind, |u, v| self.sample(u, v, tile))
     }
@@ -321,6 +331,19 @@ mod tests {
         let big = small.resize(8, 8, false);
         assert_eq!(big.w, 8);
         assert!(big.data[0] < big.data[7]);
+    }
+
+    #[test]
+    fn large_integer_resize_uses_the_shared_box_results() {
+        let img = Image::gray(64, 64, |x, y| (x + 64 * y) as f32);
+        let small = img.resize(32, 32, true);
+        for y in 0..32usize {
+            for x in 0..32usize {
+                let top = (2 * y * 64 + 2 * x) as f32;
+                let expected = (top + top + 1.0 + top + 64.0 + top + 65.0) * 0.25;
+                assert_eq!(small.data[y * 32 + x], expected);
+            }
+        }
     }
 
     #[test]
