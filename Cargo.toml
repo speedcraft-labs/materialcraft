@@ -42,6 +42,7 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/materialcraft"
 
 [workspace.dependencies]
+craft-blur = { package = "craft-blur", git = "https://github.com/speedcraft-labs/craft-libs", rev = "f0507f3d4512dfc880388a4b9687e411a27e0b35" }
 # internal
 materialcraft-core = { path = "crates/core" }
 materialcraft-image = { path = "crates/image" }

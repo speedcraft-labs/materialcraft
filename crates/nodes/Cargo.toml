@@ -9,6 +9,10 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+craft-blur = { workspace = true }
 materialcraft-core = { workspace = true }
 materialcraft-image = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+image = { workspace = true, features = ["png"] }
