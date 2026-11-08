@@ -354,7 +354,10 @@ fn render_raster(app: &mut MaterialCraftApp, ui: &mut Ui, rect: Rect, key: u64) 
     let Some(rs) = app.gpu_render_state.clone() else { return false };
     let Some((scene, light, maps, settings)) = inputs(app, 1) else { return false };
     let ppp = ui.ctx().pixels_per_point();
-    let size = [(rect.width() * ppp).round().clamp(16.0, 4096.0) as u32, (rect.height() * ppp).round().clamp(16.0, 4096.0) as u32];
+    // Keep the preview and settled ray tracer on the same pixel grid so the opt-in image
+    // comparison covers the exact displayed region.
+    let (w, h) = pixels(rect, ppp);
+    let size = [w, h];
     if app.view3d.raster.as_ref().is_none_or(|target| target.size != size) {
         if let Some(old) = app.view3d.raster.take() {
             rs.renderer.write().free_texture(&old.texture_id);
@@ -501,33 +504,41 @@ fn start_full(app: &mut MaterialCraftApp, ctx: &egui::Context, rect: Rect, key: 
 fn show_frame(app: &mut MaterialCraftApp, ctx: &egui::Context, frame: Frame, key: u64, full: bool, size: (u32, u32)) {
     #[cfg(not(target_arch = "wasm32"))]
     if full && std::env::var_os("MATERIALCRAFT_GPU_DIFF_CHECK").is_some() {
-        if let (Some(rs), Some(target)) = (&app.gpu_render_state, &app.view3d.raster)
-            && target.size == [frame.w, frame.h]
-        {
-            match target
-                .readback_rgba(&rs.device, &rs.queue)
-                .and_then(|gpu| crate::raster_preview::map_average_pixel_error(&gpu, &frame.px).ok_or_else(|| "pixel buffers have different dimensions".into()))
-            {
-                Ok(error) if error <= crate::raster_preview::GPU_RAYTRACE_MAE_TOLERANCE => {
-                    app.view3d.gpu_diff_mae = Some(error);
-                    app.view3d.gpu_diff_passed = Some(true);
-                    log::info!(
-                        "GPU preview vs settled CPU ray tracer: mean absolute difference {error:.4} (limit {:.2}, pass)",
-                        crate::raster_preview::GPU_RAYTRACE_MAE_TOLERANCE
-                    );
-                }
-                Ok(error) => {
-                    app.view3d.gpu_diff_mae = Some(error);
-                    app.view3d.gpu_diff_passed = Some(false);
-                    log::warn!(
-                        "GPU preview vs settled CPU ray tracer: mean absolute difference {error:.4} exceeds limit {:.2}",
-                        crate::raster_preview::GPU_RAYTRACE_MAE_TOLERANCE
-                    );
-                }
-                Err(error) => {
-                    app.view3d.gpu_diff_mae = None;
-                    app.view3d.gpu_diff_passed = Some(false);
-                    log::warn!("could not compare GPU preview with CPU ray tracer: {error}");
+        if let (Some(rs), Some(target)) = (&app.gpu_render_state, &app.view3d.raster) {
+            if target.size != [frame.w, frame.h] {
+                app.view3d.gpu_diff_passed = Some(false);
+                log::warn!(
+                    "GPU preview vs settled CPU ray tracer could not be compared: dimensions differ (GPU {}x{}, CPU {}x{})",
+                    target.size[0],
+                    target.size[1],
+                    frame.w,
+                    frame.h
+                );
+            } else {
+                match target.readback_rgba(&rs.device, &rs.queue).and_then(|gpu| {
+                    crate::raster_preview::map_average_pixel_error(&gpu, &frame.px).ok_or_else(|| "pixel buffers have different dimensions".into())
+                }) {
+                    Ok(error) if error <= crate::raster_preview::GPU_RAYTRACE_MAE_TOLERANCE => {
+                        app.view3d.gpu_diff_mae = Some(error);
+                        app.view3d.gpu_diff_passed = Some(true);
+                        log::info!(
+                            "GPU preview vs settled CPU ray tracer: mean absolute difference {error:.4} (limit {:.2}, pass)",
+                            crate::raster_preview::GPU_RAYTRACE_MAE_TOLERANCE
+                        );
+                    }
+                    Ok(error) => {
+                        app.view3d.gpu_diff_mae = Some(error);
+                        app.view3d.gpu_diff_passed = Some(false);
+                        log::warn!(
+                            "GPU preview vs settled CPU ray tracer: mean absolute difference {error:.4} exceeds limit {:.2}",
+                            crate::raster_preview::GPU_RAYTRACE_MAE_TOLERANCE
+                        );
+                    }
+                    Err(error) => {
+                        app.view3d.gpu_diff_mae = None;
+                        app.view3d.gpu_diff_passed = Some(false);
+                        log::warn!("could not compare GPU preview with CPU ray tracer: {error}");
+                    }
                 }
             }
         }
