@@ -169,7 +169,7 @@ fn quantize_color(ctx: &Ctx) -> CookResult {
     let rgb = |p: &[f32]| [p[0], p[1], p[2]];
     // Lloyd's k-means on up to ~4096 samples, seeded at luminance quantiles.
     let step = (img.data.len() / 4 / 4096).max(1);
-    let mut samples: Vec<[f32; 3]> = img.data.chunks_exact(4).step_by(step).map(rgb).collect();
+    let mut samples: Vec<[f32; 3]> = img.data.as_chunks::<4>().0.iter().step_by(step).map(|p| rgb(p)).collect();
     samples.sort_by(|a, b| luminance([a[0], a[1], a[2], 1.0]).total_cmp(&luminance([b[0], b[1], b[2], 1.0])));
     let mut pal: Vec<[f32; 3]> = (0..k).filter_map(|j| samples.get(((j as f32 + 0.5) / k as f32 * samples.len() as f32) as usize).copied()).collect();
     for _ in 0..8 {
