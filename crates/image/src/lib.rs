@@ -334,6 +334,19 @@ mod tests {
     }
 
     #[test]
+    fn large_integer_resize_uses_the_shared_box_results() {
+        let img = Image::gray(64, 64, |x, y| (x + 64 * y) as f32);
+        let small = img.resize(32, 32, true);
+        for y in 0..32usize {
+            for x in 0..32usize {
+                let top = (2 * y * 64 + 2 * x) as f32;
+                let expected = (top + top + 1.0 + top + 64.0 + top + 65.0) * 0.25;
+                assert_eq!(small.data[y * 32 + x], expected);
+            }
+        }
+    }
+
+    #[test]
     fn hostile_sizes_are_clamped() {
         let img = Image::filled(0, u32::MAX, Kind::Gray, [0.5; 4]);
         assert_eq!((img.w, img.h), (1, MAX_SIDE));
