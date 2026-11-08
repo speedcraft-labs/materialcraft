@@ -375,84 +375,6 @@ fn unsharp_mask(ctx: &Ctx) -> CookResult {
     })])
 }
 
-#[cfg(test)]
-mod median_tests {
-    use super::median_at;
-    use materialcraft_image::{Image, Kind};
-
-    #[test]
-    fn median_matches_total_order_oracle_at_clamped_and_tiled_edges() {
-        let image = Image::generate(5, 4, Kind::Color, |x, y| {
-            let v = |c: u32| {
-                let mut s = x.wrapping_mul(0x8da6_b343) ^ y.wrapping_mul(0xd816_3841) ^ c.wrapping_mul(0xcb1a_b31f);
-                s ^= s >> 16;
-                s = s.wrapping_mul(0x7feb_352d);
-                s ^= s >> 15;
-                if x == 0 && y == 0 && c == 0 {
-                    f32::NAN
-                } else if x == 0 && y == 0 && c == 1 {
-                    -0.0
-                } else {
-                    (s % 4096) as f32 / 127.0 - 4.0
-                }
-            };
-            [v(0), v(1), v(2), v(3)]
-        });
-        for tile in [false, true] {
-            for r in [1, 2] {
-                for y in 0..image.h as i64 {
-                    for x in 0..image.w as i64 {
-                        let got = median_at(&image, x, y, r, image.channels(), tile);
-                        for c in 0..image.channels() {
-                            let mut values = Vec::new();
-                            for dy in -r..=r {
-                                for dx in -r..=r {
-                                    values.push(image.get(x + dx, y + dy, tile)[c]);
-                                }
-                            }
-                            values.sort_by(f32::total_cmp);
-                            assert_eq!(got[c].to_bits(), values[values.len() / 2].to_bits(), "tile={tile} r={r} ({x},{y}) c={c}");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn median_matches_total_order_oracle_on_pinned_8_and_16_bit_images_when_available() {
-        let Some(root) = std::env::var_os("ARTCRAFT_CORPUS") else { return };
-        for fixture in ["basn6a08.png", "basn6a16.png"] {
-            let path = std::path::PathBuf::from(&root).join("pngsuite").join(fixture);
-            assert!(path.exists(), "missing corpus fixture {path:?}");
-            let decoded = image::open(&path);
-            assert!(decoded.is_ok(), "could not decode corpus fixture {path:?}");
-            let Ok(decoded) = decoded else { return };
-            let rgba = decoded.to_rgba32f();
-            let image = Image::generate(rgba.width(), rgba.height(), Kind::Color, |x, y| rgba.get_pixel(x, y).0);
-            for tile in [false, true] {
-                for r in [1, 2] {
-                    for y in 0..image.h as i64 {
-                        for x in 0..image.w as i64 {
-                            let got = median_at(&image, x, y, r, image.channels(), tile);
-                            for c in 0..image.channels() {
-                                let mut values = Vec::new();
-                                for dy in -r..=r {
-                                    for dx in -r..=r {
-                                        values.push(image.get(x + dx, y + dy, tile)[c]);
-                                    }
-                                }
-                                values.sort_by(f32::total_cmp);
-                                assert_eq!(got[c].to_bits(), values[values.len() / 2].to_bits(), "{fixture} tile={tile} r={r} ({x},{y}) c={c}");
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Sobel slopes (dx, dy) of a gray image, in value units per pixel.
 fn sobel_slope(img: &Image, x: i64, y: i64, tile: bool) -> (f32, f32) {
     let g = |dx: i64, dy: i64| img.get_gray(x + dx, y + dy, tile);
@@ -567,4 +489,82 @@ fn normal_sobel(ctx: &Ctx) -> CookResult {
         let ny = dy * k;
         pack([-dx * k, if dx_fmt { -ny } else { ny }, 1.0], 1.0)
     })])
+}
+
+#[cfg(test)]
+mod median_tests {
+    use super::median_at;
+    use materialcraft_image::{Image, Kind};
+
+    #[test]
+    fn median_matches_total_order_oracle_at_clamped_and_tiled_edges() {
+        let image = Image::generate(5, 4, Kind::Color, |x, y| {
+            let v = |c: u32| {
+                let mut s = x.wrapping_mul(0x8da6_b343) ^ y.wrapping_mul(0xd816_3841) ^ c.wrapping_mul(0xcb1a_b31f);
+                s ^= s >> 16;
+                s = s.wrapping_mul(0x7feb_352d);
+                s ^= s >> 15;
+                if x == 0 && y == 0 && c == 0 {
+                    f32::NAN
+                } else if x == 0 && y == 0 && c == 1 {
+                    -0.0
+                } else {
+                    (s % 4096) as f32 / 127.0 - 4.0
+                }
+            };
+            [v(0), v(1), v(2), v(3)]
+        });
+        for tile in [false, true] {
+            for r in [1, 2] {
+                for y in 0..image.h as i64 {
+                    for x in 0..image.w as i64 {
+                        let got = median_at(&image, x, y, r, image.channels(), tile);
+                        for c in 0..image.channels() {
+                            let mut values = Vec::new();
+                            for dy in -r..=r {
+                                for dx in -r..=r {
+                                    values.push(image.get(x + dx, y + dy, tile)[c]);
+                                }
+                            }
+                            values.sort_by(f32::total_cmp);
+                            assert_eq!(got[c].to_bits(), values[values.len() / 2].to_bits(), "tile={tile} r={r} ({x},{y}) c={c}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn median_matches_total_order_oracle_on_pinned_8_and_16_bit_images_when_available() {
+        let Some(root) = std::env::var_os("ARTCRAFT_CORPUS") else { return };
+        for fixture in ["basn6a08.png", "basn6a16.png"] {
+            let path = std::path::PathBuf::from(&root).join("pngsuite").join(fixture);
+            assert!(path.exists(), "missing corpus fixture {path:?}");
+            let decoded = image::open(&path);
+            assert!(decoded.is_ok(), "could not decode corpus fixture {path:?}");
+            let Ok(decoded) = decoded else { return };
+            let rgba = decoded.to_rgba32f();
+            let image = Image::generate(rgba.width(), rgba.height(), Kind::Color, |x, y| rgba.get_pixel(x, y).0);
+            for tile in [false, true] {
+                for r in [1, 2] {
+                    for y in 0..image.h as i64 {
+                        for x in 0..image.w as i64 {
+                            let got = median_at(&image, x, y, r, image.channels(), tile);
+                            for c in 0..image.channels() {
+                                let mut values = Vec::new();
+                                for dy in -r..=r {
+                                    for dx in -r..=r {
+                                        values.push(image.get(x + dx, y + dy, tile)[c]);
+                                    }
+                                }
+                                values.sort_by(f32::total_cmp);
+                                assert_eq!(got[c].to_bits(), values[values.len() / 2].to_bits(), "{fixture} tile={tile} r={r} ({x},{y}) c={c}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
