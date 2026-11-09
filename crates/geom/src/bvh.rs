@@ -79,6 +79,42 @@ fn area(lo: Vec3, hi: Vec3) -> f32 {
     d.x * d.y + d.y * d.z + d.z * d.x
 }
 
+fn best_sah_split(bins: &[(u32, Vec3, Vec3); BINS], max_cost: f32) -> Option<usize> {
+    let mut prefix = [(0u32, Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)); BINS];
+    let (mut count, mut lo, mut hi) = (0, Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for i in 0..BINS {
+        count += bins[i].0;
+        lo = lo.min(bins[i].1);
+        hi = hi.max(bins[i].2);
+        prefix[i] = (count, lo, hi);
+    }
+
+    let mut suffix = [(0u32, Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)); BINS];
+    let (mut count, mut lo, mut hi) = (0, Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for i in (0..BINS).rev() {
+        count += bins[i].0;
+        lo = lo.min(bins[i].1);
+        hi = hi.max(bins[i].2);
+        suffix[i] = (count, lo, hi);
+    }
+
+    let (mut best, mut best_cost) = (0usize, f32::MAX);
+    for split in 1..BINS {
+        let (nl, ll, lh) = prefix[split - 1];
+        let (nr, rl, rh) = suffix[split];
+        if nl == 0 || nr == 0 {
+            continue;
+        }
+        let cost = nl as f32 * area(ll, lh) + nr as f32 * area(rl, rh);
+        if cost < best_cost {
+            best_cost = cost;
+            best = split;
+        }
+    }
+
+    (best != 0 && best_cost < max_cost).then_some(best)
+}
+
 impl Bvh {
     pub fn new(mesh: &Mesh) -> Bvh {
         let n = mesh.triangle_count();
@@ -129,25 +165,7 @@ impl Bvh {
                     grow(&mut b.1, &mut b.2, p);
                 }
             }
-            let (mut best, mut best_cost) = (0usize, f32::MAX);
-            for split in 1..BINS {
-                let side = |r: std::ops::Range<usize>| {
-                    r.fold((0u32, Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(n, l, h), i| (n + bins[i].0, l.min(bins[i].1), h.max(bins[i].2)))
-                };
-                let (nl, ll, lh) = side(0..split);
-                let (nr, rl, rh) = side(split..BINS);
-                if nl == 0 || nr == 0 {
-                    continue;
-                }
-                let cost = nl as f32 * area(ll, lh) + nr as f32 * area(rl, rh);
-                if cost < best_cost {
-                    best_cost = cost;
-                    best = split;
-                }
-            }
-            if best == 0 || best_cost >= c as f32 * area(lo, hi) {
-                continue;
-            }
+            let Some(best) = best_sah_split(&bins, c as f32 * area(lo, hi)) else { continue };
             let slice = &mut order[f..f + c];
             let mut i = 0;
             for j in 0..slice.len() {
@@ -392,6 +410,137 @@ fn closest_on_triangle(p: Vec3, t: &[Vec3; 3]) -> (Vec3, f32, f32) {
 mod tests {
     use super::*;
     use crate::primitives;
+
+    fn scan_best_sah_split(bins: &[(u32, Vec3, Vec3); BINS], max_cost: f32) -> Option<usize> {
+        let mut best = 0usize;
+        let mut best_cost = f32::MAX;
+        for split in 1..BINS {
+            let side = |range: std::ops::Range<usize>| {
+                range.fold((0u32, Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(n, lo, hi), i| (n + bins[i].0, lo.min(bins[i].1), hi.max(bins[i].2)))
+            };
+            let (nl, ll, lh) = side(0..split);
+            let (nr, rl, rh) = side(split..BINS);
+            if nl == 0 || nr == 0 {
+                continue;
+            }
+            let cost = nl as f32 * area(ll, lh) + nr as f32 * area(rl, rh);
+            if cost < best_cost {
+                best_cost = cost;
+                best = split;
+            }
+        }
+        (best != 0 && best_cost < max_cost).then_some(best)
+    }
+
+    fn next_random(state: &mut u64) -> u64 {
+        *state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        *state
+    }
+
+    fn random_unit(state: &mut u64) -> f32 {
+        (next_random(state) >> 40) as f32 / (1u32 << 24) as f32
+    }
+
+    #[test]
+    fn prefix_suffix_sah_matches_rescans_and_keeps_first_tie() {
+        let mut state = 0x31e2_1a97_4c55_8d03_u64;
+        for case in 0..512 {
+            let mut bins = [(0u32, Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)); BINS];
+            for bin in &mut bins {
+                if next_random(&mut state) % 3 == 0 {
+                    continue;
+                }
+                bin.0 = (next_random(&mut state) % 4 + 1) as u32;
+                let lo = Vec3::new(random_unit(&mut state), random_unit(&mut state), random_unit(&mut state)) * 8.0 - Vec3::splat(4.0);
+                let size = Vec3::new(random_unit(&mut state), random_unit(&mut state), random_unit(&mut state)) * 2.0;
+                bin.1 = lo;
+                bin.2 = lo + size;
+            }
+            let max_cost = match case % 4 {
+                0 => 0.0,
+                1 => 1.0,
+                2 => 100.0,
+                _ => f32::MAX,
+            };
+            assert_eq!(best_sah_split(&bins, max_cost), scan_best_sah_split(&bins, max_cost), "case {case}");
+        }
+
+        let bounds = (1, Vec3::ZERO, Vec3::ONE);
+        let tied = [bounds; BINS];
+        assert_eq!(scan_best_sah_split(&tied, 100.0), Some(1));
+        assert_eq!(best_sah_split(&tied, 100.0), Some(1));
+    }
+
+    #[test]
+    fn generated_degenerate_meshes_preserve_leaf_coverage_bounds_and_hits() {
+        let mut state = 0x9b7d_52c1_08a3_e64f_u64;
+        for case in 0..16 {
+            let mut mesh = Mesh::default();
+            for triangle in 0..48 {
+                let mut vertices = [Vec3::ZERO; 3];
+                for vertex in &mut vertices {
+                    *vertex = Vec3::new(random_unit(&mut state), random_unit(&mut state), random_unit(&mut state)) * 4.0 - Vec3::splat(2.0);
+                }
+                if triangle % 7 == 0 {
+                    vertices[2] = vertices[1]; // line or point degeneracy
+                }
+                if triangle % 11 == 0 {
+                    vertices[1] = vertices[0];
+                    vertices[2] = vertices[0];
+                }
+                let first = mesh.positions.len() as u32;
+                mesh.positions.extend(vertices);
+                mesh.indices.extend([first, first + 1, first + 2]);
+            }
+
+            let bvh = Bvh::new(&mesh);
+            let mut order = bvh.order.clone();
+            order.sort_unstable();
+            assert_eq!(order, (0..mesh.triangle_count() as u32).collect::<Vec<_>>(), "order in case {case}");
+            let mut covered = vec![0u8; bvh.tris.len()];
+            for node in &bvh.nodes {
+                let lo: Vec3 = node.lo.into();
+                let hi: Vec3 = node.hi.into();
+                if node.count > 0 {
+                    for index in node.first as usize..(node.first + node.count) as usize {
+                        covered[index] += 1;
+                        for point in bvh.tris[index] {
+                            assert!((lo.cmple(point) & point.cmple(hi)).all(), "leaf bound miss in case {case}");
+                        }
+                    }
+                } else if bvh.tris.len() > LEAF {
+                    let left = &bvh.nodes[node.first as usize];
+                    let right = &bvh.nodes[node.first as usize + 1];
+                    for child in [left, right] {
+                        let child_lo: Vec3 = child.lo.into();
+                        let child_hi: Vec3 = child.hi.into();
+                        assert!((lo.cmple(child_lo) & child_hi.cmple(hi)).all(), "parent bound miss in case {case}");
+                    }
+                }
+            }
+            assert!(covered.iter().all(|&count| count == 1), "leaf coverage in case {case}: {covered:?}");
+
+            for _ in 0..24 {
+                let target_index = (next_random(&mut state) as usize) % mesh.triangle_count();
+                let [a, b, c] = mesh.tri(target_index).unwrap().map(|index| mesh.positions[index]);
+                let target = (a + b + c) / 3.0;
+                let origin = target + Vec3::Z * 8.0;
+                let direction = (target - origin).normalize();
+                let fast = bvh.closest(origin, direction, 100.0).map(|hit| hit.t);
+                let slow = (0..mesh.triangle_count())
+                    .filter_map(|index| {
+                        let [a, b, c] = mesh.tri(index)?.map(|vertex| mesh.positions[vertex]);
+                        Bvh::hit_tri(&[a, b, c], origin, direction).map(|hit| hit.0)
+                    })
+                    .min_by(f32::total_cmp);
+                match (fast, slow) {
+                    (Some(a), Some(b)) => assert!((a - b).abs() < 1e-4, "hit mismatch in case {case}: {a} vs {b}"),
+                    (None, None) => {}
+                    other => panic!("hit mismatch in case {case}: {other:?}"),
+                }
+            }
+        }
+    }
 
     #[test]
     fn nearest_point_matches_brute_force() {
