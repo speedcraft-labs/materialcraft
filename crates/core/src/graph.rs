@@ -1,6 +1,6 @@
 //! Graphs: nodes, connections, frames, comments, navigation pins and exposed inputs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -377,24 +377,36 @@ impl Graph {
     /// Nodes in dependency order (inputs before the nodes they feed). Nodes on a cycle (only
     /// possible in a hand-edited file) are left out.
     pub fn topo_order(&self) -> Vec<NodeId> {
-        let mut indeg: BTreeMap<NodeId, usize> = self.nodes.iter().map(|n| (n.id, 0)).collect();
-        for c in &self.connections {
-            if let Some(d) = indeg.get_mut(&c.to)
-                && self.nodes.iter().any(|n| n.id == c.from)
-            {
-                *d += 1;
+        let mut node_indices = HashMap::with_capacity(self.nodes.len());
+        let mut node_ids = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            if !node_indices.contains_key(&node.id) {
+                let index = node_ids.len();
+                node_ids.push(node.id);
+                node_indices.insert(node.id, index);
             }
         }
-        let mut ready: Vec<NodeId> = indeg.iter().filter(|(_, d)| **d == 0).map(|(id, _)| *id).collect();
+
+        let mut indegree = vec![0usize; node_ids.len()];
+        let mut outgoing = vec![Vec::new(); node_ids.len()];
+        for c in &self.connections {
+            let Some(&from) = node_indices.get(&c.from) else { continue };
+            let Some(&to) = node_indices.get(&c.to) else { continue };
+            indegree[to] += 1;
+            outgoing[from].push(to);
+        }
+
+        let mut ready: Vec<usize> = (0..node_ids.len()).filter(|&index| indegree[index] == 0).collect();
+        // The previous BTreeMap made the initial ready nodes ascending by id; pop() then visits
+        // the greatest id first. Sort once to preserve that order without a tree lookup per edge.
+        ready.sort_unstable_by_key(|&index| node_ids[index]);
         let mut out = Vec::with_capacity(self.nodes.len());
-        while let Some(n) = ready.pop() {
-            out.push(n);
-            for c in self.connections.iter().filter(|c| c.from == n) {
-                if let Some(d) = indeg.get_mut(&c.to) {
-                    *d = d.saturating_sub(1);
-                    if *d == 0 {
-                        ready.push(c.to);
-                    }
+        while let Some(from) = ready.pop() {
+            out.push(node_ids[from]);
+            for &to in &outgoing[from] {
+                indegree[to] = indegree[to].saturating_sub(1);
+                if indegree[to] == 0 {
+                    ready.push(to);
                 }
             }
         }
@@ -446,6 +458,31 @@ impl Graph {
 mod tests {
     use super::*;
 
+    fn scan_topo_order(graph: &Graph) -> Vec<NodeId> {
+        let mut indeg: BTreeMap<NodeId, usize> = graph.nodes.iter().map(|n| (n.id, 0)).collect();
+        for connection in &graph.connections {
+            if let Some(d) = indeg.get_mut(&connection.to)
+                && graph.nodes.iter().any(|node| node.id == connection.from)
+            {
+                *d += 1;
+            }
+        }
+        let mut ready: Vec<NodeId> = indeg.iter().filter(|(_, degree)| **degree == 0).map(|(id, _)| *id).collect();
+        let mut order = Vec::with_capacity(graph.nodes.len());
+        while let Some(node) = ready.pop() {
+            order.push(node);
+            for connection in graph.connections.iter().filter(|connection| connection.from == node) {
+                if let Some(degree) = indeg.get_mut(&connection.to) {
+                    *degree = degree.saturating_sub(1);
+                    if *degree == 0 {
+                        ready.push(connection.to);
+                    }
+                }
+            }
+        }
+        order
+    }
+
     #[test]
     fn connect_refuses_cycles_and_replaces_inputs() {
         let mut g = Graph::new("g");
@@ -462,5 +499,51 @@ mod tests {
         assert_eq!(g.upstream(c), vec![a]);
         g.remove_nodes(&[a]);
         assert_eq!(g.connections.len(), 0);
+    }
+
+    #[test]
+    fn indexed_topology_matches_scan_for_dags_cycles_duplicates_and_dangling_edges() {
+        let mut state = 0x8f3d_9b71_4a25_c6e1_u64;
+        for case in 0..256 {
+            let node_count = (next_random(&mut state) % 9) as usize;
+            let mut graph = Graph::new("topology reference");
+            let nodes: Vec<_> = (0..node_count).map(|index| graph.add_node("uniform", [index as f32, 0.0])).collect();
+
+            if nodes.len() >= 2 {
+                push_edge(&mut graph, nodes[0], nodes[1]);
+                push_edge(&mut graph, nodes[0], nodes[1]); // duplicate edge
+                push_edge(&mut graph, nodes[1], nodes[0]); // cycle
+            }
+            if let Some(&first) = nodes.first() {
+                push_edge(&mut graph, NodeId(u64::MAX), first); // dangling source
+                push_edge(&mut graph, first, NodeId(u64::MAX - 1)); // dangling target
+            }
+
+            let edge_count = (next_random(&mut state) % 40) as usize;
+            for _ in 0..edge_count {
+                let from = random_node(&mut state, &nodes);
+                let to = random_node(&mut state, &nodes);
+                push_edge(&mut graph, from, to);
+            }
+
+            assert_eq!(graph.topo_order(), scan_topo_order(&graph), "graph case {case}");
+        }
+    }
+
+    fn push_edge(graph: &mut Graph, from: NodeId, to: NodeId) {
+        graph.connections.push(Connection { from, from_port: "output".into(), to, to_port: "input".into() });
+    }
+
+    fn random_node(state: &mut u64, nodes: &[NodeId]) -> NodeId {
+        match next_random(state) % (nodes.len() as u64 + 2) {
+            index if index < nodes.len() as u64 => nodes[index as usize],
+            index if index == nodes.len() as u64 => NodeId(u64::MAX),
+            _ => NodeId(u64::MAX - 1),
+        }
+    }
+
+    fn next_random(state: &mut u64) -> u64 {
+        *state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        *state
     }
 }
