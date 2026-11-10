@@ -1,33 +1,25 @@
-//! Packages: the document. A package holds graphs and the resources (bitmaps) they use.
-
-use std::sync::Arc;
-
+use crate::Resource;
+use crate::{CoreError, Graph, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::{CoreError, Graph, Result};
-
-/// The native package extension (a zip: `package.json` plus `resources/`).
-pub const PACKAGE_EXT: &str = "mcraft";
-
-/// An embedded file: a bitmap a Bitmap node shows, or an SVG.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Resource {
-    /// Unique name, referenced by nodes (`resource` parameter).
-    pub name: String,
-    /// File name inside the package's `resources/` folder.
-    pub file: String,
-    /// The file's bytes (stored in the zip, not in `package.json`).
-    #[serde(skip)]
-    pub bytes: Arc<Vec<u8>>,
-}
+pub const PACKAGE_EXT: &str = "sbs";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Package {
     pub name: String,
     pub graphs: Vec<Graph>,
+    /// Explicit SBS group paths, including folders without graphs
+    #[serde(default)]
+    pub folders: Vec<String>,
+    /// Descriptions of SBS groups, keyed by their full folder path.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub folder_descriptions: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub resources: Vec<Resource>,
-    /// Format version of `package.json`.
+    /// Resolved source packages shared by cooks; SBS stores their file references instead
+    #[serde(skip)]
+    pub dependencies: std::collections::BTreeMap<String, std::sync::Arc<Package>>,
+    /// Format version of `package.json`
     #[serde(default = "version")]
     pub version: u32,
 }
@@ -38,7 +30,33 @@ fn version() -> u32 {
 
 impl Package {
     pub fn new(name: &str) -> Package {
-        Package { name: name.into(), graphs: Vec::new(), resources: Vec::new(), version: 1 }
+        Package {
+            name: name.into(),
+            graphs: Vec::new(),
+            folders: Vec::new(),
+            folder_descriptions: Default::default(),
+            resources: Vec::new(),
+            version: 1,
+            dependencies: Default::default(),
+        }
+    }
+
+    pub fn folder_paths(&self) -> std::collections::BTreeSet<String> {
+        let mut folders = std::collections::BTreeSet::from(["Resources".to_string()]);
+        for path in self
+            .folders
+            .iter()
+            .map(String::as_str)
+            .chain(self.graphs.iter().map(|graph| graph.folder.as_str()))
+            .chain(self.resources.iter().map(|resource| resource.folder.as_str()))
+        {
+            let mut parent = path;
+            while !parent.is_empty() {
+                folders.insert(parent.to_string());
+                parent = parent.rsplit_once('/').map_or("", |(parent, _)| parent);
+            }
+        }
+        folders
     }
 
     pub fn graph(&self, i: usize) -> Result<&Graph> {
@@ -50,19 +68,29 @@ impl Package {
     }
 
     pub fn graph_by_name(&self, name: &str) -> Option<(usize, &Graph)> {
-        self.graphs.iter().enumerate().find(|(_, g)| g.name == name)
+        self.graphs.iter().enumerate().find(|(_, g)| g.sbs_path() == name).or_else(|| {
+            let mut matches = self.graphs.iter().enumerate().filter(|(_, g)| g.name == name);
+            let first = matches.next()?;
+            matches.next().is_none().then_some(first)
+        })
     }
 
     pub fn resource(&self, name: &str) -> Option<&Resource> {
         self.resources.iter().find(|r| r.name == name)
     }
 
-    /// A name not used by any graph: `base`, `base_1`, `base_2`…
-    pub fn unique_graph_name(&self, base: &str) -> String {
-        let base = if base.trim().is_empty() { "Graph" } else { base.trim() };
-        if self.graph_by_name(base).is_none() {
-            return base.to_string();
+    pub fn instance_package(&self, node: &crate::Node) -> Option<&Package> {
+        match node.instance.as_ref().map(|instance| instance.package.as_str()) {
+            Some(file) if !file.is_empty() => self.dependencies.get(file).map(AsRef::as_ref),
+            _ => Some(self),
         }
-        (1..).map(|i| format!("{base}_{i}")).find(|n| self.graph_by_name(n).is_none()).unwrap_or_else(|| base.to_string())
+    }
+
+    pub fn instance_graph(&self, node: &crate::Node) -> Option<(usize, &Graph)> {
+        let name = node.instance.as_ref().map(|instance| instance.graph.as_str()).or_else(|| match node.params.get("graph") {
+            Some(crate::Value::Text(name)) => Some(name.as_str()),
+            _ => None,
+        })?;
+        self.instance_package(node)?.graph_by_name(name)
     }
 }
