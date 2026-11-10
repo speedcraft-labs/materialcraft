@@ -325,7 +325,7 @@ impl RasterResources {
             self.env_name.clone_from(&call.light.name);
             self.bind_group = None;
         }
-        let camera = materialcraft_render::camera(&call.scene, &call.settings);
+        let camera = materialcraft_render::preview::camera(&call.scene, &call.settings);
         let mut sh = [[0.0; 4]; 9];
         for (dst, src) in sh.iter_mut().zip(call.light.sh) {
             *dst = [src[0], src[1], src[2], 0.0];

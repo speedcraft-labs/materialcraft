@@ -9,6 +9,5 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-craft-resample = { workspace = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }

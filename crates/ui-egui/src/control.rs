@@ -7,7 +7,9 @@
 //! - `command.list {filter?}`: every command with params docs and enabled state.
 //! - `session.inspect`: package, graph, nodes, wires, parameters, cook results, views, history.
 //! - `ui.inspect`: the UI state (panels, windows, graph camera, node rectangles and ports on screen).
-//! - `ui.menu.list` / `ui.menu.invoke {id}`: the menu catalog; behave like a menu click.
+//! - `ui.menu.list` / `ui.menu.invoke {id}`: the menu catalog; behave like a menu click, so behind
+//!   a dialog or prompt an item lists as disabled and invoking it returns an error, except the
+//!   commands [`crate::shell::modality::Modality::allows`] lets through.
 //! - `ui.set {...}`: merge fields into the UI state (e.g. `{"prefs": {"thumbnails": false}}`).
 //! - `ui.input {events}`: synthetic pointer, wheel, key and text input (see [`parse_events`]).
 //! - `view.screenshot {view?: "3d"|"2d"}`: PNG of a view, base64.
@@ -119,7 +121,8 @@ fn modifiers(v: &Value) -> Modifiers {
     for k in v.get("modifiers").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
         match k.to_ascii_lowercase().as_str() {
             "ctrl" | "control" => {
-                m.ctrl = true;
+                // A shortcut's Ctrl is Command on macOS, where the real Control key is a different chord
+                m.ctrl = !cfg!(target_os = "macos");
                 m.command = true;
             }
             "shift" => m.shift = true,
@@ -208,7 +211,34 @@ pub fn parse_events(list: &[Value]) -> Result<Vec<Scripted>, String> {
     Ok(frames)
 }
 
+/// Recursive JSON merge: objects merge key by key, anything else in `patch` replaces `dst`.
+fn merge_json(dst: &mut Value, patch: &Value) {
+    match (dst, patch) {
+        (Value::Object(d), Value::Object(p)) => {
+            for (k, v) in p {
+                match d.get_mut(k) {
+                    Some(slot) => merge_json(slot, v),
+                    None => {
+                        d.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        (slot, v) => *slot = v.clone(),
+    }
+}
+
 pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: &Value) -> Value {
+    match crate::cook::guard("control request", || Ok(handle_inner(app, ctx, method, p))) {
+        Ok(v) => v,
+        Err(e) => {
+            app.session.dirty = false;
+            err(e)
+        }
+    }
+}
+
+fn handle_inner(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: &Value) -> Value {
     match method {
         "ping" => ok(json!("pong")),
         "ui.resize" => {
@@ -225,27 +255,78 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
         "command.run" => {
             let Some(id) = p.get("id").and_then(Value::as_str) else { return err("`id` is required") };
             let params = p.get("params").cloned().unwrap_or(Value::Null);
-            match materialcraft_engine::execute(&mut app.session, id, &params) {
-                Ok(v) => ok(v),
-                Err(e) => err(e),
+            match crate::cook::guard("command request", || {
+                Ok(materialcraft_engine::commands::execute_request(&mut app.session, id, &params).map_err(|error| error.to_string()))
+            }) {
+                Ok(Ok(v)) => {
+                    if id == "view.previewSize" {
+                        app.ui.prefs.preview_size = app.session.preview_size.unwrap_or(0);
+                    }
+                    if id == "session.history" {
+                        app.ui.prefs.history = app.session.history_prefs;
+                    }
+                    app.close_subgraph_after(id);
+                    ok(v)
+                }
+                Ok(Err(e)) => err(e),
+                Err(e) => {
+                    app.session.dirty = false;
+                    err(e)
+                }
             }
         }
         "command.list" => ok(materialcraft_engine::commands::list(&app.session, p.get("filter").and_then(Value::as_str))),
         "session.inspect" => {
-            app.session.cook_if_dirty();
-            ok(materialcraft_engine::inspect::session(&app.session, None))
+            match crate::cook::guard("session.inspect", || {
+                app.session.cook_if_dirty();
+                if app.session.graph().is_err() {
+                    return Err(format!("invalid graph {}", app.session.graph));
+                }
+
+                Ok(materialcraft_engine::inspect::session(&app.session, None))
+            }) {
+                Ok(v) => ok(v),
+                Err(e) => {
+                    app.session.dirty = false;
+                    err(e)
+                }
+            }
         }
         "ui.inspect" => {
             if std::env::var("MATERIALCRAFT_RECORD_GPU_TIMING").as_deref() == Ok("1") {
                 crate::view3d::refresh_gpu_frame_time(app);
             }
             let rect = |r: egui::Rect| json!([r.min.x, r.min.y, r.width(), r.height()]);
+            let target = crate::graph::editor_target::EditorTarget::resolve(app);
+            let (view, nodes, ports) = (app.graph.view, &app.graph.rects, &app.graph.ports);
             ok(json!({
                 "state": app.ui,
-                "graphView": rect(app.graph.view),
+                "graphView": rect(view),
                 "view3dRect": app.view3d.view_rect,
-                "nodes": app.graph.rects.iter().map(|(id, r)| json!({"id": id.0, "rect": rect(*r)})).collect::<Vec<_>>(),
-                "ports": app.graph.ports.iter().map(|h| json!({"node": h.node.0, "port": h.port, "output": h.output, "pos": [h.pos.x, h.pos.y]})).collect::<Vec<_>>(),
+                "selection": app.session.selection,
+                "inspectedNode": app.graph.inspected_node,
+                "inspectedGraph": app.inspected_graph.map(|target| json!({"document": target.document, "graph": target.graph})),
+                "inspectedFolder": app.inspected_folder.as_ref().map(|(document, path)| json!({"document": document, "folder": path})),
+                "subgraph": match target {
+                    crate::graph::editor_target::EditorTarget::Function => app.function_editor.as_ref()
+                        .map(|editor| json!({"kind": "function", "graph": app.session.graph, "node": editor.node, "target": editor.command_target(), "selection": editor.selection, "selectedWires": editor.selected_wires, "inspectedNode": editor.inspected_node})),
+                    crate::graph::editor_target::EditorTarget::Pattern => app.pattern_editor.as_ref()
+                        .map(|editor| json!({"kind": "pattern", "graph": editor.graph, "node": editor.node.0, "selection": editor.selection, "selectedWires": editor.selected_wires, "inspectedNode": editor.inspected_node})),
+                    crate::graph::editor_target::EditorTarget::Material => None,
+                },
+                "annotationSelection": app.session.annotation_selection,
+                "annotationTarget": app.session.annotation_target,
+                "pins": app.graph.pins.iter().map(|(id, bounds)| json!({"id": id, "rect": rect(*bounds)})).collect::<Vec<_>>(),
+                "frames": app.graph.frames.iter().map(|(id, bounds)| json!({"id": id, "rect": rect(*bounds)})).collect::<Vec<_>>(),
+                "comments": app.graph.comments.iter().map(|(id, bounds)| json!({"id": id, "rect": rect(*bounds)})).collect::<Vec<_>>(),
+                "nodes": nodes.iter().map(|(id, r)| json!({"id": id.0, "rect": rect(*r)})).collect::<Vec<_>>(),
+                "ports": ports.iter().map(|port| json!({
+                    "node": port.node.0,
+                    "port": port.port,
+                    "label": port.label,
+                    "output": port.output,
+                    "pos": [port.pos.x, port.pos.y],
+                })).collect::<Vec<_>>(),
                 "fps": app.fps,
                 "uiMs": app.ui_ms,
                 "cooking": app.cooker.busy(),
@@ -259,24 +340,32 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
                 "toasts": app.toasts.iter().map(|t| json!({"text": t.text, "error": t.error})).collect::<Vec<_>>(),
             }))
         }
-        "ui.menu.list" => ok(crate::menus::list(app)),
+        "ui.menu.list" => ok(crate::menus::list(app, ctx)),
         "ui.menu.invoke" => {
             let Some(id) = p.get("id").and_then(Value::as_str) else { return err("`id` is required") };
             if !crate::menus::implemented(id) {
                 return err(format!("menu item `{id}` is not implemented"));
             }
+            let modality = crate::shell::modality::Modality::capture(app, ctx);
+            if let crate::shell::modality::Modality::Blocked(blocker) = modality
+                && !modality.allows(id)
+            {
+                return err(format!("menu item `{id}` cannot run while {} is open", blocker.name()));
+            }
+
             crate::menus::invoke(app, ctx, id);
             ok(Value::Null)
         }
         "ui.set" => {
             let mut cur = serde_json::to_value(&app.ui).unwrap_or(Value::Null);
-            if let (Some(obj), Some(patch)) = (cur.as_object_mut(), p.as_object()) {
-                for (k, v) in patch {
-                    obj.insert(k.clone(), v.clone());
-                }
+            if p.is_object() {
+                merge_json(&mut cur, p);
             }
-            match serde_json::from_value(cur) {
-                Ok(ui) => {
+            match serde_json::from_value::<crate::state::UiState>(cur) {
+                Ok(mut ui) => {
+                    ui.graph_camera = ui.graph_camera.sanitized();
+                    ui.image_camera = ui.image_camera.sanitized();
+                    ui.windows.unsaved = app.ui.windows.unsaved.clone();
                     app.ui = ui;
                     ok(Value::Null)
                 }
@@ -325,5 +414,99 @@ mod tests {
         assert!(parse_events(&[json!({"type": "key", "key": "NoSuchKey"})]).is_err());
         assert!(parse_events(&[json!({"type": "click"})]).is_err());
         assert!(parse_events(&[json!({"pos": [1, 2]})]).is_err());
+    }
+
+    fn app() -> MaterialCraftApp {
+        MaterialCraftApp::headless(materialcraft_engine::sample_session(), crate::state::UiState::default())
+    }
+
+    #[test]
+    fn a_menu_item_returns_an_error_behind_a_dialog() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.ui.windows.unsaved = Some(crate::unsaved::Guarded::Quit);
+
+        let reply = handle(&mut app, &ctx, "ui.menu.invoke", &json!({"id": "ui.export"}));
+        assert_eq!(reply["ok"], json!(false), "{reply}");
+        assert_eq!(reply["error"], json!("menu item `ui.export` cannot run while the unsaved-changes prompt is open"), "{reply}");
+        assert!(!app.ui.windows.export);
+
+        let list = handle(&mut app, &ctx, "ui.menu.list", &json!({}));
+        assert!(list["result"].as_array().unwrap().iter().all(|item| item["enabled"] == json!(false)), "{list}");
+
+        app.ui.windows.unsaved = None;
+        let reply = handle(&mut app, &ctx, "ui.menu.invoke", &json!({"id": "ui.export"}));
+        assert_eq!(reply["ok"], json!(true), "{reply}");
+        assert!(app.ui.windows.export);
+    }
+
+    #[test]
+    fn a_menu_item_reports_the_blocker_behind_a_file_dialog_or_an_update_window() {
+        let ctx = egui::Context::default();
+        let mut behind_dialog = app();
+        behind_dialog.dialogs.ask(craft_dialogs::FileDialog::open(), crate::native_dialogs::Then::OpenPackage);
+        assert_eq!(handle(&mut behind_dialog, &ctx, "ui.menu.invoke", &json!({"id": "file.open"}))["ok"], json!(true));
+        let reply = handle(&mut behind_dialog, &ctx, "ui.menu.invoke", &json!({"id": "file.save"}));
+        assert_eq!(reply["error"], json!("menu item `file.save` cannot run while a file dialog is open"), "{reply}");
+        let list = handle(&mut behind_dialog, &ctx, "ui.menu.list", &json!({}));
+        let open = list["result"].as_array().unwrap().iter().find(|item| item["id"] == json!("file.open")).unwrap();
+        assert_eq!(open["enabled"], json!(true), "{list}");
+
+        let mut behind_update = app();
+        crate::updates_ui::open_prompt_for_test(&mut behind_update);
+        let reply = handle(&mut behind_update, &ctx, "ui.menu.invoke", &json!({"id": "ui.export"}));
+        assert_eq!(reply["error"], json!("menu item `ui.export` cannot run while an update window is open"), "{reply}");
+    }
+
+    #[test]
+    fn command_run_stays_available_behind_a_dialog() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.ui.windows.unsaved = Some(crate::unsaved::Guarded::Quit);
+        let reply = handle(&mut app, &ctx, "command.run", &json!({"id": "edit.selectAll"}));
+        assert_eq!(reply["ok"], json!(true), "{reply}");
+        assert_eq!(app.ui.windows.unsaved, Some(crate::unsaved::Guarded::Quit));
+    }
+
+    #[test]
+    fn ui_set_merges_nested_objects_instead_of_resetting_siblings() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.ui.prefs.ui_scale = 1.5;
+        app.ui.prefs.autosave_minutes = 9;
+        let r = handle(&mut app, &ctx, "ui.set", &json!({"prefs": {"thumbnails": false}}));
+        assert_eq!(r["ok"], json!(true), "{r}");
+        assert!(!app.ui.prefs.thumbnails);
+        assert_eq!(app.ui.prefs.ui_scale, 1.5);
+        assert_eq!(app.ui.prefs.autosave_minutes, 9);
+    }
+
+    #[test]
+    fn ui_set_clamps_camera_zoom() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let r = handle(&mut app, &ctx, "ui.set", &json!({"graphCamera": {"zoom": 0.0}, "imageCamera": {"zoom": 0.0, "fit": false}}));
+        assert_eq!(r["ok"], json!(true), "{r}");
+        assert!(app.ui.graph_camera.zoom > 0.0);
+        assert!(app.ui.image_camera.zoom > 0.0);
+        let c = &app.ui.graph_camera;
+        assert!((c.pan[0] + 100.0 / c.zoom).is_finite());
+    }
+
+    #[test]
+    fn session_inspect_panic_returns_error_and_resets_cook_state() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.session.preview_size = Some(64);
+        app.session.cook();
+        let valid_graph = app.session.graph;
+        app.session.graph = app.session.graph.wrapping_add(1_000);
+        app.session.dirty = true;
+        let r = handle(&mut app, &ctx, "session.inspect", &json!({}));
+        assert_eq!(r["ok"], json!(false), "{r}");
+        assert!(!app.session.dirty, "cook state not reset after panic: dirty={}", app.session.dirty);
+        app.session.graph = valid_graph;
+        let r = handle(&mut app, &ctx, "session.inspect", &json!({}));
+        assert_eq!(r["ok"], json!(true), "{r}");
     }
 }
