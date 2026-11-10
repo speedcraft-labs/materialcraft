@@ -5,6 +5,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod control_server;
+#[cfg(target_os = "linux")]
 mod gpu;
 mod start_failure;
 
@@ -116,10 +117,14 @@ fn main() {
         std::env::var_os("MATERIALCRAFT_NO_PREFS").map(|_| std::env::temp_dir().join(format!("materialcraft-noprefs-{}.ron", std::process::id())));
     let control = args.control;
     let startup_update_check = checks_for_updates_at_start(control, persistence_path.is_some());
-    let mut options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, persistence_path, ..Default::default() };
+    let options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, persistence_path, ..Default::default() };
     // MaterialCraft's measured orbit preview uses Vulkan; keep the native platform defaults elsewhere.
     #[cfg(target_os = "linux")]
-    gpu::prefer_hardware_vulkan(&mut options);
+    let options = {
+        let mut options = options;
+        gpu::prefer_hardware_vulkan(&mut options);
+        options
+    };
     let r = eframe::run_native(
         "MaterialCraft",
         options,
