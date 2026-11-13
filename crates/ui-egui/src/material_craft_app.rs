@@ -10,8 +10,6 @@ pub struct MaterialCraftApp {
     pub session: Session,
     pub ui: UiState,
     pub control: Option<std::sync::mpsc::Receiver<ControlRequest>>,
-    /// Order the window forward for agent-driven UI requests without activating the app (macOS).
-    pub raise_without_focus: Option<fn() -> bool>,
     pub toasts: Vec<Toast>,
     /// Background cooking of the open graph
     pub cooker: cook::Cooker,
@@ -100,7 +98,6 @@ impl MaterialCraftApp {
             session,
             ui,
             control: None,
-            raise_without_focus: None,
             toasts: Vec::new(),
             cooker: cook::Cooker::default(),
             thumbs: thumbs::Thumbs::default(),

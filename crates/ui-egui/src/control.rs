@@ -57,10 +57,8 @@ pub fn poll(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     let reqs: Vec<ControlRequest> = rx.try_iter().collect();
     for r in reqs {
         if (r.method.starts_with("ui.") && r.method != "ui.focus") || r.method == "view.screenshot" {
-            // UI requests need a rendered pass, but must not activate the app for an agent.
-            if let Some(raise_without_focus) = app.raise_without_focus {
-                raise_without_focus();
-            }
+            // UI requests need a rendered pass, but must not order the window in front or activate the app.
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
             ctx.request_repaint();
         }
         if r.method == "ui.screenshot" {
@@ -262,6 +260,8 @@ fn handle_inner(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p
         }
         "ui.focus" => {
             // Explicit request: activate the app and take keyboard focus.
+            #[cfg(target_os = "macos")]
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::viewport::WindowLevel::Normal));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ok(Value::Null)
         }
@@ -412,42 +412,42 @@ fn handle_inner(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p
 mod tests {
     use super::*;
 
-    static RAISES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-    fn raise_without_focus() -> bool {
-        RAISES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        true
-    }
-
     #[test]
-    fn ui_requests_and_screenshots_raise_without_focus_but_ui_focus_stays_explicit() {
+    fn ui_requests_and_screenshots_paint_while_hidden_without_raising_and_focus_stays_explicit() {
         let mut app = app();
-        app.raise_without_focus = Some(raise_without_focus);
         let (tx, rx) = std::sync::mpsc::channel();
         app.control = Some(rx);
         let ctx = egui::Context::default();
-        RAISES.store(0, std::sync::atomic::Ordering::SeqCst);
 
-        let (req, _reply) = ControlRequest::new("ui.inspect".into(), json!({}));
-        tx.send(req).unwrap();
-        poll(&mut app, &ctx);
-        assert_eq!(RAISES.load(std::sync::atomic::Ordering::SeqCst), 1);
-
-        let (req, _reply) = ControlRequest::new("ui.screenshot".into(), json!({}));
-        tx.send(req).unwrap();
-        poll(&mut app, &ctx);
-        assert_eq!(RAISES.load(std::sync::atomic::Ordering::SeqCst), 2);
+        for method in ["ui.inspect", "ui.screenshot", "view.screenshot"] {
+            let (req, _reply) = ControlRequest::new(method.into(), json!({}));
+            assert!(tx.send(req).is_ok());
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| poll(&mut app, ui.ctx()));
+            let commands = output.viewport_output.remove(&egui::ViewportId::ROOT).map(|root| root.commands).unwrap_or_default();
+            output.textures_delta.clear();
+            assert!(commands.contains(&egui::ViewportCommand::RequestPaintWhileHidden), "{method}: {commands:?}");
+            assert!(!commands.contains(&egui::ViewportCommand::Focus), "{method}: {commands:?}");
+            #[cfg(target_os = "macos")]
+            assert!(!commands.iter().any(|command| matches!(command, egui::ViewportCommand::WindowLevel(_))), "{method}: {commands:?}");
+        }
         assert_eq!(app.pending_screenshots.len(), 1);
 
-        let (req, _reply) = ControlRequest::new("view.screenshot".into(), json!({}));
-        tx.send(req).unwrap();
-        poll(&mut app, &ctx);
-        assert_eq!(RAISES.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| request_screenshots(&mut app, ui.ctx()));
+        let commands = output.viewport_output.remove(&egui::ViewportId::ROOT).map(|root| root.commands).unwrap_or_default();
+        output.textures_delta.clear();
+        assert!(commands.contains(&egui::ViewportCommand::RequestPaintWhileHidden), "{commands:?}");
+        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::Screenshot(_))), "{commands:?}");
+        assert!(app.pending_screenshots.is_empty());
 
         let (req, _reply) = ControlRequest::new("ui.focus".into(), json!({}));
-        tx.send(req).unwrap();
-        poll(&mut app, &ctx);
-        assert_eq!(RAISES.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(tx.send(req).is_ok());
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| poll(&mut app, ui.ctx()));
+        let commands = output.viewport_output.remove(&egui::ViewportId::ROOT).map(|root| root.commands).unwrap_or_default();
+        output.textures_delta.clear();
+        assert!(commands.contains(&egui::ViewportCommand::Focus), "{commands:?}");
+        assert!(!commands.contains(&egui::ViewportCommand::RequestPaintWhileHidden), "{commands:?}");
+        #[cfg(target_os = "macos")]
+        assert!(commands.contains(&egui::ViewportCommand::WindowLevel(egui::viewport::WindowLevel::Normal)), "{commands:?}");
     }
 
     #[test]
