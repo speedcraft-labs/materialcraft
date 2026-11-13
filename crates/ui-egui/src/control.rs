@@ -15,6 +15,7 @@
 //! - `view.screenshot {view?: "3d"|"2d"}`: PNG of a view, base64.
 //! - `ui.screenshot`: PNG of the whole window (replies after the next frame).
 //! - `ui.resize {width, height}`: the window's inner size in points.
+//! - `ui.focus`: explicitly activate the window and take keyboard focus.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -55,6 +56,13 @@ pub fn poll(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     let Some(rx) = app.control.as_ref() else { return };
     let reqs: Vec<ControlRequest> = rx.try_iter().collect();
     for r in reqs {
+        if (r.method.starts_with("ui.") && r.method != "ui.focus") || r.method == "view.screenshot" {
+            // UI requests need a rendered pass, but must not activate the app for an agent.
+            if let Some(raise_without_focus) = app.raise_without_focus {
+                raise_without_focus();
+            }
+            ctx.request_repaint();
+        }
         if r.method == "ui.screenshot" {
             // Captured from the UI pass (`request_screenshots`), where viewport commands land.
             app.pending_screenshots.push(r.reply);
@@ -252,6 +260,11 @@ fn handle_inner(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p
                 _ => err("`width` and `height` (points, 640..7680) are required"),
             }
         }
+        "ui.focus" => {
+            // Explicit request: activate the app and take keyboard focus.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ok(Value::Null)
+        }
         "command.run" => {
             let Some(id) = p.get("id").and_then(Value::as_str) else { return err("`id` is required") };
             let params = p.get("params").cloned().unwrap_or(Value::Null);
@@ -398,6 +411,44 @@ fn handle_inner(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static RAISES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn raise_without_focus() -> bool {
+        RAISES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        true
+    }
+
+    #[test]
+    fn ui_requests_and_screenshots_raise_without_focus_but_ui_focus_stays_explicit() {
+        let mut app = app();
+        app.raise_without_focus = Some(raise_without_focus);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.control = Some(rx);
+        let ctx = egui::Context::default();
+        RAISES.store(0, std::sync::atomic::Ordering::SeqCst);
+
+        let (req, _reply) = ControlRequest::new("ui.inspect".into(), json!({}));
+        tx.send(req).unwrap();
+        poll(&mut app, &ctx);
+        assert_eq!(RAISES.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let (req, _reply) = ControlRequest::new("ui.screenshot".into(), json!({}));
+        tx.send(req).unwrap();
+        poll(&mut app, &ctx);
+        assert_eq!(RAISES.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(app.pending_screenshots.len(), 1);
+
+        let (req, _reply) = ControlRequest::new("view.screenshot".into(), json!({}));
+        tx.send(req).unwrap();
+        poll(&mut app, &ctx);
+        assert_eq!(RAISES.load(std::sync::atomic::Ordering::SeqCst), 3);
+
+        let (req, _reply) = ControlRequest::new("ui.focus".into(), json!({}));
+        tx.send(req).unwrap();
+        poll(&mut app, &ctx);
+        assert_eq!(RAISES.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
 
     #[test]
     fn input_events_become_frames() {
