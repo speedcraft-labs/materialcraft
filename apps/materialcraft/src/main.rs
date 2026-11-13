@@ -8,6 +8,8 @@ mod control_server;
 #[cfg(target_os = "linux")]
 mod gpu;
 mod start_failure;
+#[cfg(target_os = "macos")]
+mod window_raise;
 
 use materialcraft_engine::Session;
 use materialcraft_ui_egui::MaterialCraftApp;
@@ -116,8 +118,17 @@ fn main() {
     let persistence_path =
         std::env::var_os("MATERIALCRAFT_NO_PREFS").map(|_| std::env::temp_dir().join(format!("materialcraft-noprefs-{}.ron", std::process::id())));
     let control = args.control;
+    let agent = control.is_some();
+    // Started for an agent (`--control`): open without taking the user's keyboard focus.
+    viewport = viewport.with_active(!agent);
     let startup_update_check = checks_for_updates_at_start(control, persistence_path.is_some());
-    let options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, persistence_path, ..Default::default() };
+    let options = eframe::NativeOptions {
+        viewport,
+        renderer: eframe::Renderer::Wgpu,
+        persistence_path,
+        event_loop_builder: agent_event_loop(agent),
+        ..Default::default()
+    };
     // MaterialCraft's measured orbit preview uses Vulkan; keep the native platform defaults elsewhere.
     #[cfg(target_os = "linux")]
     let options = {
@@ -130,6 +141,10 @@ fn main() {
         options,
         Box::new(move |cc| {
             let mut app = MaterialCraftApp::new(cc, session);
+            #[cfg(target_os = "macos")]
+            if agent {
+                app.raise_without_focus = Some(window_raise::raise_without_focus);
+            }
             app.window_layout = window_frame.layout().cloned();
             // Called from the creator: winit installs its default menu before this runs. On error winit's menu stays, whose Quit does not ask
             #[cfg(target_os = "macos")]
@@ -149,6 +164,20 @@ fn main() {
         start_failure::report(&e);
         std::process::exit(1);
     }
+}
+
+/// Driven by an agent (`--control`): don't activate the app on launch, so the user's keyboard
+/// focus stays where it is (macOS; winit activates ignoring other apps by default).
+fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
+    #[cfg(target_os = "macos")]
+    if agent {
+        return Some(Box::new(|b| {
+            use winit::platform::macos::EventLoopBuilderExtMacOS;
+            b.with_activate_ignoring_other_apps(false);
+        }));
+    }
+    let _ = agent;
+    None
 }
 
 #[cfg(test)]
