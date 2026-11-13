@@ -8,6 +8,8 @@ mod control_server;
 #[cfg(target_os = "linux")]
 mod gpu;
 mod start_failure;
+#[cfg(target_os = "macos")]
+mod window_raise;
 
 use materialcraft_engine::Session;
 use materialcraft_ui_egui::MaterialCraftApp;
@@ -144,6 +146,10 @@ fn main() {
         options,
         Box::new(move |cc| {
             let mut app = MaterialCraftApp::new(cc, session);
+            #[cfg(target_os = "macos")]
+            if agent {
+                app.raise_without_focus = Some(window_raise::raise_without_focus);
+            }
             app.window_layout = window_frame.layout().cloned();
             // Called from the creator: winit installs its default menu before this runs. On error winit's menu stays, whose Quit does not ask
             #[cfg(target_os = "macos")]
